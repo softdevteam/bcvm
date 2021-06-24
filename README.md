@@ -1,2 +1,2 @@
 # bcvm
-LLVM bitcode interpreter.
+An LLVM bitcode interpreter written in Rust.
