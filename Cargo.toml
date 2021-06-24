@@ -1,0 +1,20 @@
+[package]
+name = "bcvm"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+llvm-ir = {version = "0.8.0", features = ["llvm-12"]}
+
+[[test]]
+name = "lang_tests"
+path = "lang_tests/run.rs"
+harness = false
+
+[dev-dependencies]
+lazy_static = "1.4.0"
+lang_tester = "0.7.0"
+regex = "1.5"
+tempfile = "3.2.0"
