@@ -18,7 +18,8 @@ rustup toolchain install nightly --allow-downgrade --component rustfmt
 
 cargo fmt --all -- --check
 
-export PATH=opt/llvm-12.0.0/bin:${PATH}
+export LLVM_SYS_120_PREFIX=/opt/llvm-12.0.0/
+export PATH=/opt/llvm-12.0.0/bin:${PATH}
 
 cargo test
 cargo test --release
