@@ -7,6 +7,8 @@ edition = "2018"
 
 [dependencies]
 llvm-ir = {version = "0.8.0", features = ["llvm-12"]}
+libc = "0.2.97"
+either = "1.6.1"
 
 [[test]]
 name = "lang_tests"
