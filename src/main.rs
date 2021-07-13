@@ -8,7 +8,7 @@ use llvm_ir::{
         Name::{Name, Number},
     },
     types::FPType,
-    BasicBlock, ConstantRef, Module,
+    ConstantRef, Function, IntPredicate, Module,
     Operand::{self, ConstantOperand, LocalOperand, MetadataOperand},
     Terminator, Type, TypeRef,
 };
@@ -43,10 +43,8 @@ impl BFInterp {
             None => return Err("No main function"),
         };
 
-        match self.it_bb(&main_func.basic_blocks[0]) {
-            Some(_ret) => return Ok(()),
-            None => return Ok(()),
-        }
+        self.it_bb(main_func, main_func.basic_blocks[0].name.clone());
+        Ok(())
     }
 
     fn store_gl_var(&mut self, module: &Module) {
@@ -61,80 +59,130 @@ impl BFInterp {
         }
     }
 
-    fn it_bb(&mut self, bb: &BasicBlock) -> Option<u64> {
-        for inst in bb.instrs.iter() {
-            match inst {
-                Instruction::Alloca(_) => {}
-                Instruction::Store(store) => self.store_var(&store.address, &store.value),
-                Instruction::Load(load) => self.load(&load.address, &load.dest),
-                Instruction::Call(call) => self.call_func(call),
-                Instruction::Add(add) => {
-                    self.int_bin_operations(&add.operand0, &add.operand1, &add.dest, BinOps::Add)
+    fn it_bb(&mut self, func: &Function, bb_name: name::Name) {
+        let mut bb_name = Some(bb_name);
+        while bb_name != None {
+            //PERF: get_bb_by_name function is inefficient.
+            let bb = func.get_bb_by_name(bb_name.as_ref().unwrap()).unwrap();
+            for inst in bb.instrs.iter() {
+                match inst {
+                    Instruction::Alloca(_) => {}
+                    Instruction::Store(store) => self.store_var(&store.address, &store.value),
+                    Instruction::Load(load) => self.load(&load.address, &load.dest),
+                    Instruction::Call(call) => self.call_func(call),
+                    Instruction::Add(add) => self.int_bin_operations(
+                        &add.operand0,
+                        &add.operand1,
+                        &add.dest,
+                        BinOps::Add,
+                    ),
+                    Instruction::FAdd(fadd) => self.fl_bin_operations(
+                        &fadd.operand0,
+                        &fadd.operand1,
+                        &fadd.dest,
+                        BinOps::Add,
+                    ),
+                    Instruction::FPExt(fpext) => {
+                        self.fpext(&fpext.operand, &fpext.to_type, &fpext.dest)
+                    }
+                    Instruction::Sub(sub) => self.int_bin_operations(
+                        &sub.operand0,
+                        &sub.operand1,
+                        &sub.dest,
+                        BinOps::Sub,
+                    ),
+                    Instruction::Mul(mul) => self.int_bin_operations(
+                        &mul.operand0,
+                        &mul.operand1,
+                        &mul.dest,
+                        BinOps::Mul,
+                    ),
+                    Instruction::UDiv(udiv) => self.int_bin_operations(
+                        &udiv.operand0,
+                        &udiv.operand1,
+                        &udiv.dest,
+                        BinOps::Div,
+                    ),
+                    Instruction::SDiv(sdiv) => self.int_bin_operations(
+                        &sdiv.operand0,
+                        &sdiv.operand1,
+                        &sdiv.dest,
+                        BinOps::Div,
+                    ),
+                    Instruction::URem(urem) => self.int_bin_operations(
+                        &urem.operand0,
+                        &urem.operand1,
+                        &urem.dest,
+                        BinOps::Rem,
+                    ),
+                    Instruction::SRem(srem) => self.int_bin_operations(
+                        &srem.operand0,
+                        &srem.operand1,
+                        &srem.dest,
+                        BinOps::Rem,
+                    ),
+                    Instruction::FSub(fsub) => self.fl_bin_operations(
+                        &fsub.operand0,
+                        &fsub.operand1,
+                        &fsub.dest,
+                        BinOps::Sub,
+                    ),
+                    Instruction::SExt(sext) => self.szext(&sext.operand, &sext.to_type, &sext.dest),
+                    Instruction::FMul(fmul) => self.fl_bin_operations(
+                        &fmul.operand0,
+                        &fmul.operand1,
+                        &fmul.dest,
+                        BinOps::Mul,
+                    ),
+                    Instruction::FDiv(fdiv) => self.fl_bin_operations(
+                        &fdiv.operand0,
+                        &fdiv.operand1,
+                        &fdiv.dest,
+                        BinOps::Div,
+                    ),
+                    Instruction::ICmp(icmp) => {
+                        self.icmp(icmp.predicate, &icmp.operand0, &icmp.operand1, &icmp.dest)
+                    }
+                    Instruction::ZExt(zext) => self.szext(&zext.operand, &zext.to_type, &zext.dest),
+                    _ => todo!(),
                 }
-                Instruction::FAdd(fadd) => {
-                    self.fl_bin_operations(&fadd.operand0, &fadd.operand1, &fadd.dest, BinOps::Add)
+            }
+
+            match &bb.term {
+                Terminator::Ret(ret) => {
+                    match ret.return_operand.as_ref() {
+                        Some(op) => match op {
+                            LocalOperand { .. } => todo!(),
+                            ConstantOperand(con_ref) => match con_ref.as_ref() {
+                                Constant::Int { bits: _, .. } => {
+                                    // FIXME: Store return value.
+                                }
+                                _ => todo!(),
+                            },
+                            MetadataOperand => todo!(),
+                        },
+                        None => {}
+                    }
+                    bb_name = None;
                 }
-                Instruction::FPExt(fpext) => {
-                    self.fpext(&fpext.operand, &fpext.to_type, &fpext.dest)
-                }
-                Instruction::Sub(sub) => {
-                    self.int_bin_operations(&sub.operand0, &sub.operand1, &sub.dest, BinOps::Sub)
-                }
-                Instruction::Mul(mul) => {
-                    self.int_bin_operations(&mul.operand0, &mul.operand1, &mul.dest, BinOps::Mul)
-                }
-                Instruction::UDiv(udiv) => {
-                    self.int_bin_operations(&udiv.operand0, &udiv.operand1, &udiv.dest, BinOps::Div)
-                }
-                Instruction::SDiv(sdiv) => {
-                    self.int_bin_operations(&sdiv.operand0, &sdiv.operand1, &sdiv.dest, BinOps::Div)
-                }
-                Instruction::URem(urem) => {
-                    self.int_bin_operations(&urem.operand0, &urem.operand1, &urem.dest, BinOps::Rem)
-                }
-                Instruction::SRem(srem) => {
-                    self.int_bin_operations(&srem.operand0, &srem.operand1, &srem.dest, BinOps::Rem)
-                }
-                Instruction::FSub(fsub) => {
-                    self.fl_bin_operations(&fsub.operand0, &fsub.operand1, &fsub.dest, BinOps::Sub)
-                }
-                Instruction::SExt(sext) => self.sext(&sext.operand, &sext.to_type, &sext.dest),
-                Instruction::FMul(fmul) => {
-                    self.fl_bin_operations(&fmul.operand0, &fmul.operand1, &fmul.dest, BinOps::Mul)
-                }
-                Instruction::FDiv(fdiv) => {
-                    self.fl_bin_operations(&fdiv.operand0, &fdiv.operand1, &fdiv.dest, BinOps::Div)
+                Terminator::Br(br) => bb_name = Some(br.dest.clone()),
+                Terminator::CondBr(condbr) => {
+                    bb_name =
+                        Some(self.condbr(&condbr.condition, &condbr.true_dest, &condbr.false_dest))
                 }
                 _ => todo!(),
             }
-        }
-        match &bb.term {
-            Terminator::Ret(ret) => match ret.return_operand.as_ref() {
-                Some(op) => match op {
-                    LocalOperand { .. } => todo!(),
-                    ConstantOperand(con_ref) => match con_ref.as_ref() {
-                        Constant::Int { bits: _, value } => {
-                            return Some(*value);
-                        }
-                        _ => todo!(),
-                    },
-                    MetadataOperand => todo!(),
-                },
-                None => None,
-            },
-            _ => todo!(),
         }
     }
 
     fn store_var(&mut self, op: &Operand, val: &Operand) {
         match op {
-            LocalOperand { name, .. } => {
-                let op_name = name;
+            LocalOperand { name: op_name, .. } => {
                 match val {
                     LocalOperand { name, .. } => self
                         .vars
                         .insert(op_name.clone(), self.vars.get(name).unwrap().clone()),
-                    ConstantOperand(..) => self.vars.insert(name.clone(), val.clone()),
+                    ConstantOperand(..) => self.vars.insert(op_name.clone(), val.clone()),
                     MetadataOperand => todo!(),
                 };
             }
@@ -484,33 +532,96 @@ impl BFInterp {
         }
     }
 
-    fn sext(&mut self, op: &Operand, to_type: &TypeRef, dest: &name::Name) {
+    fn szext(&mut self, op: &Operand, to_type: &TypeRef, dest: &name::Name) {
         match op {
             LocalOperand { name, ty } => match ty.as_ref() {
-                Type::IntegerType { bits } => match bits {
-                    32 => match to_type.as_ref() {
-                        Type::IntegerType { bits } => {
-                            match bits {
-                                64 => {
-                                    let constant = Constant::Int {
-                                        bits: 64,
-                                        value: self.get_int_op(self.vars.get(name).unwrap()) as i32
-                                            as i64
-                                            as u64,
-                                    };
-                                    self.vars.insert(
-                                        dest.clone(),
-                                        ConstantOperand(ConstantRef::new(constant)),
-                                    );
-                                }
-                                _ => todo!(),
-                            };
-                        }
-                        _ => todo!(),
-                    },
+                Type::IntegerType { bits: _ } => match to_type.as_ref() {
+                    Type::IntegerType { bits } => {
+                        match bits {
+                            32 => {
+                                let constant = Constant::Int {
+                                    bits: 32,
+                                    value: self.get_int_op(self.vars.get(name).unwrap()),
+                                };
+                                self.vars.insert(
+                                    dest.clone(),
+                                    ConstantOperand(ConstantRef::new(constant)),
+                                );
+                            }
+                            64 => {
+                                let constant = Constant::Int {
+                                    bits: 64,
+                                    value: self.get_int_op(self.vars.get(name).unwrap()),
+                                };
+                                self.vars.insert(
+                                    dest.clone(),
+                                    ConstantOperand(ConstantRef::new(constant)),
+                                );
+                            }
+                            _ => todo!(),
+                        };
+                    }
                     _ => todo!(),
                 },
                 _ => todo!(),
+            },
+            ConstantOperand(_) => todo!(),
+            MetadataOperand => todo!(),
+        }
+    }
+
+    fn icmp(&mut self, pred: IntPredicate, op0: &Operand, op1: &Operand, dest: &name::Name) {
+        match op0 {
+            LocalOperand { name, ty } => match ty.as_ref() {
+                Type::IntegerType { bits: _ } => {
+                    let op0 = self.get_int_op(self.vars.get(name).unwrap());
+                    let op1 = self.get_int_op(op1);
+                    self.store_comp(pred, op0, op1, dest);
+                }
+                _ => todo!(),
+            },
+            ConstantOperand(con_op) => match con_op.as_ref() {
+                Constant::Int { .. } => todo!(),
+                Constant::Vector(_) => todo!(),
+                _ => todo!(),
+            },
+            MetadataOperand => todo!(),
+        }
+    }
+
+    fn store_comp(&mut self, pred: IntPredicate, op0: u64, op1: u64, dest: &name::Name) {
+        let is_true = match pred {
+            IntPredicate::EQ => op0 == op1,
+            IntPredicate::NE => op0 != op1,
+            IntPredicate::UGT => op0 > op1,
+            IntPredicate::UGE => op0 >= op1,
+            IntPredicate::ULT => op0 < op1,
+            IntPredicate::ULE => op0 <= op1,
+            IntPredicate::SGT => op0 > op1,
+            IntPredicate::SGE => op0 >= op1,
+            IntPredicate::SLT => op0 < op1,
+            IntPredicate::SLE => op0 <= op1,
+        };
+
+        let constant = Constant::Int {
+            bits: 8,
+            value: is_true.into(),
+        };
+        self.vars
+            .insert(dest.clone(), ConstantOperand(ConstantRef::new(constant)));
+    }
+
+    fn condbr(
+        &self,
+        cond: &Operand,
+        true_dest: &name::Name,
+        false_dest: &name::Name,
+    ) -> name::Name {
+        match cond {
+            LocalOperand { name, .. } => match self.get_int_op(self.vars.get(name).unwrap()) {
+                0 => false_dest.clone(),
+                1 => true_dest.clone(),
+                _ => unreachable!(),
             },
             ConstantOperand(_) => todo!(),
             MetadataOperand => todo!(),
