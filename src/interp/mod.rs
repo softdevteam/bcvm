@@ -8,7 +8,7 @@ use llvm_ir::{
         Name::{Name, Number},
     },
     types::FPType,
-    ConstantRef, Function, IntPredicate, Module,
+    ConstantRef, IntPredicate, Module,
     Operand::{self, ConstantOperand, LocalOperand, MetadataOperand},
     Terminator, Type, TypeRef,
 };
@@ -20,33 +20,42 @@ enum BinOps {
     Div,
     Rem,
 }
+enum BbReturn {
+    Return(Option<Operand>),
+    Call(Call),
+}
 pub(crate) struct LLVMIRInterpreter {
+    module: Module,
+    callstack: Vec<HashMap<name::Name, Operand>>,
     vars: HashMap<name::Name, Operand>,
     gl_vars: HashMap<name::Name, Constant>,
 }
 
 impl LLVMIRInterpreter {
-    pub fn new() -> LLVMIRInterpreter {
+    pub fn new(module: Module) -> LLVMIRInterpreter {
         LLVMIRInterpreter {
+            module,
+            callstack: Vec::new(),
             vars: HashMap::new(),
             gl_vars: HashMap::new(),
         }
     }
 
-    pub fn interpret(&mut self, module: Module) -> Result<(), &'static str> {
-        self.store_gl_var(&module);
+    pub fn interpret(&mut self) -> Result<(), &'static str> {
+        self.store_gl_var();
 
-        let main_func = match module.get_func_by_name("main") {
-            Some(main) => main,
+        let main_bb1 = match self.module.get_func_by_name("main") {
+            Some(main) => main.basic_blocks[0].name.clone(),
             None => return Err("No main function"),
         };
 
-        self.it_bb(main_func, main_func.basic_blocks[0].name.clone());
+        self.it_funcs("main", main_bb1);
+
         Ok(())
     }
 
-    fn store_gl_var(&mut self, module: &Module) {
-        for gl_var in module.global_vars.iter() {
+    fn store_gl_var(&mut self) {
+        for gl_var in self.module.global_vars.iter() {
             match &gl_var.initializer {
                 Some(init) => {
                     self.gl_vars
@@ -57,17 +66,104 @@ impl LLVMIRInterpreter {
         }
     }
 
-    fn it_bb(&mut self, func: &Function, bb_name: name::Name) {
-        let mut bb_name = Some(bb_name);
-        while bb_name != None {
+    fn it_funcs(&mut self, main_name: &str, main_bb1_name: name::Name) {
+        let mut it_bb_params = Vec::new();
+        let mut value = self.it_bb(main_name, main_bb1_name, 0, &mut it_bb_params);
+        while !it_bb_params.is_empty() {
+            match value {
+                BbReturn::Call(c) => {
+                    self.callstack.push(self.vars.clone());
+
+                    let func_name = self.call_func(&c);
+
+                    match self.module.get_func_by_name(&func_name) {
+                        Some(func) => {
+                            self.vars.clear();
+
+                            for (par, arg) in func.parameters.iter().zip(c.arguments.iter()) {
+                                self.vars.insert(par.name.clone(), arg.0.clone());
+                            }
+
+                            let func_name = func.name.clone();
+                            let bb_name = func.basic_blocks[0].name.clone();
+
+                            value = self.it_bb(&func_name, bb_name, 0, &mut it_bb_params);
+                        }
+                        None => {
+                            if func_name == "printf" {
+                                self.printf(c);
+                            }
+                            value = BbReturn::Return(None)
+                        }
+                    }
+                }
+                BbReturn::Return(r) => {
+                    let (func_name, bb_name, inst_ind, call_dest) = it_bb_params.pop().unwrap();
+                    if !self.callstack.is_empty() {
+                        self.vars.clear();
+                        self.vars.extend(self.callstack.pop().unwrap().into_iter());
+                    }
+                    match r {
+                        Some(v) => match call_dest {
+                            Some(dest) => {
+                                self.vars.insert(dest.clone(), v);
+                            }
+                            None => todo!(),
+                        },
+                        None => {}
+                    }
+
+                    value = self.it_bb(func_name.as_str(), bb_name, inst_ind, &mut it_bb_params);
+                }
+            }
+        }
+    }
+
+    fn call_func(&mut self, call: &Call) -> String {
+        match &call.function {
+            Left(_) => todo!(),
+            Right(op) => match op {
+                LocalOperand { .. } => todo!(),
+                ConstantOperand(con_op) => match con_op.as_ref() {
+                    Constant::GlobalReference { name, .. } => match name {
+                        Name(n) => {
+                            return n.as_str().to_owned();
+                        }
+                        Number(_) => todo!(),
+                    },
+                    _ => todo!(),
+                },
+                MetadataOperand => todo!(),
+            },
+        }
+    }
+
+    fn it_bb(
+        &mut self,
+        func_name: &str,
+        bb_name: name::Name,
+        mut inst_ind: usize,
+        it_bb_params: &mut Vec<(String, llvm_ir::Name, usize, Option<name::Name>)>,
+    ) -> BbReturn {
+        let func = self.module.get_func_by_name(func_name).unwrap().clone();
+        let mut bb_name_option = Some(bb_name);
+        while let Some(bb_name) = bb_name_option {
             //PERF: get_bb_by_name function is inefficient.
-            let bb = func.get_bb_by_name(bb_name.as_ref().unwrap()).unwrap();
-            for inst in bb.instrs.iter() {
+            let bb = func.get_bb_by_name(&bb_name).unwrap();
+            for (new_inst_ind, inst) in bb.instrs[inst_ind..].iter().enumerate() {
                 match inst {
                     Instruction::Alloca(_) => {}
                     Instruction::Store(store) => self.store_var(&store.address, &store.value),
                     Instruction::Load(load) => self.load(&load.address, &load.dest),
-                    Instruction::Call(call) => self.call_func(call),
+                    Instruction::Call(call) => {
+                        it_bb_params.push((
+                            func_name.to_owned(),
+                            bb_name,
+                            inst_ind + new_inst_ind + 1,
+                            call.dest.clone(),
+                        ));
+                        return BbReturn::Call(call.clone());
+                    }
                     Instruction::Add(add) => self.int_bin_operations(
                         &add.operand0,
                         &add.operand1,
@@ -149,28 +245,24 @@ impl LLVMIRInterpreter {
             match &bb.term {
                 Terminator::Ret(ret) => {
                     match ret.return_operand.as_ref() {
-                        Some(op) => match op {
-                            LocalOperand { .. } => todo!(),
-                            ConstantOperand(con_ref) => match con_ref.as_ref() {
-                                Constant::Int { bits: _, .. } => {
-                                    // FIXME: Store return value.
-                                }
-                                _ => todo!(),
-                            },
-                            MetadataOperand => todo!(),
-                        },
+                        Some(op) => return BbReturn::Return(Some(op.clone())),
                         None => {}
                     }
-                    bb_name = None;
+                    bb_name_option = None;
                 }
-                Terminator::Br(br) => bb_name = Some(br.dest.clone()),
+                Terminator::Br(br) => {
+                    bb_name_option = Some(br.dest.clone());
+                    inst_ind = 0;
+                }
                 Terminator::CondBr(condbr) => {
-                    bb_name =
-                        Some(self.condbr(&condbr.condition, &condbr.true_dest, &condbr.false_dest))
+                    bb_name_option =
+                        Some(self.condbr(&condbr.condition, &condbr.true_dest, &condbr.false_dest));
+                    inst_ind = 0;
                 }
                 _ => todo!(),
             }
         }
+        BbReturn::Return(None)
     }
 
     fn store_var(&mut self, op: &Operand, val: &Operand) {
@@ -202,28 +294,7 @@ impl LLVMIRInterpreter {
             .insert(dest.clone(), self.vars.get(name).unwrap().clone());
     }
 
-    fn call_func(&mut self, call: &Call) {
-        match &call.function {
-            Left(_) => todo!(),
-            Right(op) => match op {
-                LocalOperand { .. } => todo!(),
-                ConstantOperand(con_op) => match con_op.as_ref() {
-                    Constant::GlobalReference { name, .. } => match name {
-                        Name(n) => {
-                            if n.as_str() == "printf" {
-                                self.printf(call);
-                            }
-                        }
-                        Number(_) => todo!(),
-                    },
-                    _ => todo!(),
-                },
-                MetadataOperand => todo!(),
-            },
-        }
-    }
-
-    fn printf(&mut self, call: &Call) {
+    fn printf(&mut self, call: Call) {
         let constant = match &call.arguments[0].0 {
             LocalOperand { .. } => todo!(),
             ConstantOperand(const_op) => match const_op.as_ref() {

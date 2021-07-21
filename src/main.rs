@@ -5,13 +5,15 @@ use llvm_ir::Module;
 use std::env;
 
 fn main() {
-    let mut lii = LLVMIRInterpreter::new();
     let args: Vec<String> = env::args().collect();
     match create_module(&args[1]) {
-        Ok(module) => match lii.interpret(module) {
-            Ok(_) => {}
-            Err(str) => println!("{}", str),
-        },
+        Ok(module) => {
+            let mut lii = LLVMIRInterpreter::new(module);
+            match lii.interpret() {
+                Ok(_) => {}
+                Err(str) => println!("{}", str),
+            }
+        }
         Err(error_message) => println!("{}", error_message),
     };
 }
