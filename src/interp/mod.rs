@@ -259,6 +259,13 @@ impl LLVMIRInterpreter {
                         Some(self.condbr(&condbr.condition, &condbr.true_dest, &condbr.false_dest));
                     inst_ind = 0;
                 }
+                Terminator::Switch(switch) => {
+                    bb_option = func.get_bb_by_name(&self.switch(
+                        &switch.operand,
+                        &switch.dests,
+                        &switch.default_dest,
+                    ))
+                }
                 _ => todo!(),
             }
         }
@@ -692,6 +699,32 @@ impl LLVMIRInterpreter {
                 1 => true_dest.clone(),
                 _ => unreachable!(),
             },
+            ConstantOperand(_) => todo!(),
+            MetadataOperand => todo!(),
+        }
+    }
+
+    fn switch(
+        &mut self,
+        op: &Operand,
+        dests: &Vec<(ConstantRef, name::Name)>,
+        default_dest: &name::Name,
+    ) -> name::Name {
+        match op {
+            LocalOperand { name, .. } => {
+                let op = self.get_int_op(self.vars.get(name).unwrap());
+                for dest in dests {
+                    match dest.0.as_ref() {
+                        Constant::Int { bits: _, value } => {
+                            if value == &op {
+                                return dest.1.clone();
+                            }
+                        }
+                        _ => todo!(),
+                    }
+                }
+                return default_dest.clone();
+            }
             ConstantOperand(_) => todo!(),
             MetadataOperand => todo!(),
         }
