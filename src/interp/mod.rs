@@ -260,11 +260,9 @@ impl LLVMIRInterpreter {
                     inst_ind = 0;
                 }
                 Terminator::Switch(switch) => {
-                    bb_option = func.get_bb_by_name(&self.switch(
-                        &switch.operand,
-                        &switch.dests,
-                        &switch.default_dest,
-                    ))
+                    bb_name_option =
+                        Some(self.switch(&switch.operand, &switch.dests, &switch.default_dest));
+                    inst_ind = 0;
                 }
                 _ => todo!(),
             }
